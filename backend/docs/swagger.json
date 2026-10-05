@@ -1,0 +1,146 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "AI Diet & Nutrition Platform API",
+    "version": "2.0.0",
+    "description": "Production-grade RESTful API featuring JWT/Cookie authentication, Multimodal Gemini 2.5 Vision meal scanning, Contextual AI Nutritionist chat, and OpenFoodFacts barcode resolution."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000/api",
+      "description": "Local development server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "paths": {
+    "/auth/signup": {
+      "post": {
+        "summary": "Register a new user",
+        "tags": ["Authentication"],
+        "security": [],
+        "responses": {
+          "201": { "description": "User created successfully with access & refresh tokens" },
+          "400": { "description": "Validation error or email already in use" }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "summary": "Authenticate user credentials",
+        "tags": ["Authentication"],
+        "security": [],
+        "responses": {
+          "200": { "description": "Successfully authenticated" },
+          "401": { "description": "Invalid email or password" }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "summary": "Rotate refresh token & issue new access token",
+        "tags": ["Authentication"],
+        "security": [],
+        "responses": {
+          "200": { "description": "New access and refresh tokens returned" }
+        }
+      }
+    },
+    "/ai/scan-food": {
+      "post": {
+        "summary": "Gemini 2.5 Vision plate recognition and macro estimation",
+        "tags": ["AI Engine"],
+        "responses": {
+          "200": { "description": "Identified meal, items breakdown, macros, and health score" }
+        }
+      }
+    },
+    "/ai/chat": {
+      "post": {
+        "summary": "Context-aware AI Clinical Nutritionist advice",
+        "tags": ["AI Engine"],
+        "responses": {
+          "200": { "description": "AI guidance tailored to user biometrics and today's logs" }
+        }
+      }
+    },
+    "/ai/barcode/{barcode}": {
+      "get": {
+        "summary": "Look up product nutrition by barcode from OpenFoodFacts",
+        "tags": ["AI Engine"],
+        "responses": {
+          "200": { "description": "Verified product information and macronutrient profile" },
+          "404": { "description": "Barcode not found in database" }
+        }
+      }
+    },
+    "/food/log": {
+      "get": {
+        "summary": "Get today's food logs and totals via MongoDB Aggregation",
+        "tags": ["Food Tracking"],
+        "responses": {
+          "200": { "description": "List of logs and calculated daily macro totals" }
+        }
+      },
+      "post": {
+        "summary": "Log a food item with meal type",
+        "tags": ["Food Tracking"],
+        "responses": {
+          "201": { "description": "Food item saved successfully" }
+        }
+      }
+    },
+    "/food/weekly": {
+      "get": {
+        "summary": "Get 7-day chronological calorie and macro progress",
+        "tags": ["Food Tracking"],
+        "responses": {
+          "200": { "description": "Daily aggregated calories, protein, carbs, and fats" }
+        }
+      }
+    },
+    "/diet/recommendation": {
+      "get": {
+        "summary": "Calculate BMR, TDEE, target calories, macro splits and a diet style plan",
+        "tags": ["Diet Planning"],
+        "parameters": [
+          {
+            "name": "style",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["balanced", "high_protein", "low_carb", "keto", "mediterranean", "vegetarian", "vegan", "intermittent_fasting"]
+            },
+            "description": "Diet style to plan for. Omit to use the style suggested from the user's goal and dietary restrictions."
+          }
+        ],
+        "responses": {
+          "200": { "description": "Personalized metabolic profile with the selected diet style plan" }
+        }
+      }
+    },
+    "/diet/styles": {
+      "get": {
+        "summary": "List selectable diet styles and the one suggested for the user",
+        "tags": ["Diet Planning"],
+        "responses": {
+          "200": { "description": "Available diet styles, suggested style and saved dietary restrictions" }
+        }
+      }
+    }
+  }
+}
+

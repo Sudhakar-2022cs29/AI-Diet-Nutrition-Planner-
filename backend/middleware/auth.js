@@ -1,32 +1,41 @@
 // JWT authentication middleware
-// Protects routes so only logged-in users can access them
+// Supports Authorization: Bearer <token> and HttpOnly cookie
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const AppError = require('../utils/AppError');
 
 const protect = async (req, res, next) => {
   let token;
 
-  // Check if Authorization header has a Bearer token
+  // 1. Check Authorization header
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    try {
-      // Extract token from "Bearer <token>"
-      token = req.headers.authorization.split(' ')[1];
-
-      // Verify the token using our secret key
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // Attach user info to the request (excluding password)
-      req.user = await User.findById(decoded.id).select('-password');
-
-      next(); // Proceed to the actual route handler
-    } catch (error) {
-      return res.status(401).json({ message: 'Not authorized, token failed' });
-    }
+    token = req.headers.authorization.split(' ')[1];
+  } else if (req.cookies && req.cookies.accessToken) {
+    // 2. Check cookies
+    token = req.cookies.accessToken;
   }
 
   if (!token) {
-    return res.status(401).json({ message: 'Not authorized, no token provided' });
+    return next(new AppError('Authentication required. Please log in.', 401, 'AUTH_REQUIRED'));
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return next(new AppError('The user belonging to this token no longer exists.', 401, 'USER_NOT_FOUND'));
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    if (error.name === 'TokenExpiredError') {
+      return next(new AppError('Token has expired. Please refresh your session.', 401, 'TOKEN_EXPIRED'));
+    }
+    return next(new AppError('Invalid token. Please log in again.', 401, 'INVALID_TOKEN'));
   }
 };
 
 module.exports = { protect };
+

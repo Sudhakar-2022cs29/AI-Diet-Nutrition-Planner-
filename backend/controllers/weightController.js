@@ -1,13 +1,13 @@
 // Weight log controller — track user's weight over time
 const WeightLog = require('../models/WeightLog');
+const AppError = require('../utils/AppError');
 
 // @route  POST /api/weight
 // @desc   Add a new weight entry
 // @access Private
-const addWeight = async (req, res) => {
+const addWeight = async (req, res, next) => {
   try {
     const { weight, note } = req.body;
-    if (!weight) return res.status(400).json({ message: 'Weight is required' });
 
     const log = await WeightLog.create({
       userId: req.user._id,
@@ -17,41 +17,41 @@ const addWeight = async (req, res) => {
 
     res.status(201).json(log);
   } catch (error) {
-    res.status(500).json({ message: 'Error adding weight entry', error: error.message });
+    next(error);
   }
 };
 
 // @route  GET /api/weight
 // @desc   Get weight history (last 30 entries)
 // @access Private
-const getWeightHistory = async (req, res) => {
+const getWeightHistory = async (req, res, next) => {
   try {
     const logs = await WeightLog.find({ userId: req.user._id })
-      .sort({ createdAt: -1 })
-      .limit(30);
+      .sort({ createdAt: 1 })
+      .limit(60);
 
-    res.json(logs.reverse()); // Return in chronological order
+    res.json(logs);
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching weight history', error: error.message });
+    next(error);
   }
 };
 
 // @route  DELETE /api/weight/:id
 // @desc   Delete a weight log entry
 // @access Private
-const deleteWeight = async (req, res) => {
+const deleteWeight = async (req, res, next) => {
   try {
     const log = await WeightLog.findById(req.params.id);
-    if (!log) return res.status(404).json({ message: 'Weight log not found' });
+    if (!log) return next(new AppError('Weight log not found', 404));
 
     if (log.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Not authorized' });
+      return next(new AppError('Not authorized to delete this entry', 403));
     }
 
     await WeightLog.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Weight entry deleted' });
+    res.json({ status: 'success', message: 'Weight entry deleted' });
   } catch (error) {
-    res.status(500).json({ message: 'Error deleting weight entry', error: error.message });
+    next(error);
   }
 };
 

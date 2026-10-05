@@ -1,8 +1,8 @@
-// Login page
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { FiMail, FiLock, FiLogIn } from 'react-icons/fi';
+import { toast } from 'sonner';
 
 export default function Login() {
   const [form, setForm] = useState({ email: '', password: '' });
@@ -16,8 +16,13 @@ export default function Login() {
     e.preventDefault();
     setError('');
     const result = await login(form);
-    if (result.success) navigate('/dashboard');
-    else setError(result.message);
+    if (result.success) {
+      toast.success('Signed in successfully!');
+      navigate('/dashboard');
+    } else {
+      setError(result.message);
+      toast.error(result.message);
+    }
   };
 
   return (

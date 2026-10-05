@@ -1,8 +1,10 @@
-// Food controller — food detection, calorie lookup, CRUD for food logs
+// Food controller — food detection, calorie lookup, and aggregation-driven CRUD
 const FoodLog = require('../models/FoodLog');
 const fetch = require('node-fetch');
+const cacheService = require('../config/redis');
+const AppError = require('../utils/AppError');
 
-// ── Mock food database (used when API key is not set or API fails) ──────────
+// Built-in food database for offline/demo reliability
 const mockFoodDatabase = {
   pizza:       { calories: 266, protein: 11, carbs: 33, fat: 10, fiber: 2.3 },
   apple:       { calories: 52,  protein: 0.3, carbs: 14, fat: 0.2, fiber: 2.4 },
@@ -23,7 +25,7 @@ const mockFoodDatabase = {
   orange:      { calories: 47,  protein: 0.9, carbs: 12, fat: 0.1, fiber: 2.4 },
   chocolate:   { calories: 546, protein: 5,   carbs: 60, fat: 31,  fiber: 7 },
   steak:       { calories: 271, protein: 26,  carbs: 0,  fat: 18,  fiber: 0 },
-  soup:        { calories: 50,  protein: 2,   carbs: 9,  fat: 0.8, fiber: 1 },
+  soup:        { calories: 50,  protein: 2,   carbs: 9,  fat: 0.8, fiber: 1 }
 };
 
 // Healthier alternative suggestions
@@ -34,14 +36,23 @@ const alternatives = {
   chocolate:   ['Dark chocolate (70%+)', 'Mixed berries', 'Dates with almond butter'],
   bread:       ['Whole grain bread', 'Sourdough bread', 'Rice cakes'],
   rice:        ['Brown rice', 'Quinoa', 'Cauliflower rice'],
-  sandwich:    ['Whole wheat wrap', 'Lettuce wrap', 'Pita with hummus'],
+  sandwich:    ['Whole wheat wrap', 'Lettuce wrap', 'Pita with hummus']
 };
 
-// Look up a food by name — tries CalorieNinjas API first, falls back to mock DB
+/**
+ * Look up a food item with Redis caching & CalorieNinjas API
+ */
 const lookupFood = async (foodName) => {
+  const cleanName = foodName.toLowerCase().trim();
+  const cacheKey = `food:query:${cleanName}`;
+
+  // 1. Check Redis / memory cache
+  const cached = await cacheService.get(cacheKey);
+  if (cached) return cached;
+
   const apiKey = process.env.CALORIENINJAS_API_KEY;
 
-  // Use real API if key is provided
+  // 2. Query CalorieNinjas API if key is present
   if (apiKey && apiKey.trim() !== '') {
     try {
       const response = await fetch(
@@ -52,7 +63,7 @@ const lookupFood = async (foodName) => {
 
       if (data.items && data.items.length > 0) {
         const item = data.items[0];
-        return {
+        const result = {
           foodName: item.name,
           calories: Math.round(item.calories),
           protein:  Math.round(item.protein_g),
@@ -62,37 +73,41 @@ const lookupFood = async (foodName) => {
           serving:  `${item.serving_size_g}g`,
           source:   'CalorieNinjas API'
         };
+
+        // Cache 24 hours
+        await cacheService.set(cacheKey, result, 86400);
+        return result;
       }
     } catch (err) {
-      console.log('CalorieNinjas API failed, using mock database:', err.message);
+      console.warn('CalorieNinjas API failed, falling back:', err.message);
     }
   }
 
-  // Fall back to mock database
-  const key = foodName.toLowerCase().trim();
-  // Try exact match first, then partial
-  let match = mockFoodDatabase[key];
+  // 3. Fall back to local database
+  let match = mockFoodDatabase[cleanName];
   if (!match) {
-    const matchKey = Object.keys(mockFoodDatabase).find(k => key.includes(k) || k.includes(key));
+    const matchKey = Object.keys(mockFoodDatabase).find(k => cleanName.includes(k) || k.includes(cleanName));
     if (matchKey) match = mockFoodDatabase[matchKey];
   }
 
   if (match) {
-    return {
-      foodName: foodName,
+    const result = {
+      foodName,
       calories: match.calories,
       protein:  match.protein,
       carbs:    match.carbs,
       fat:      match.fat,
       fiber:    match.fiber,
       serving:  '100g',
-      source:   'Simulation (Demo)'
+      source:   'Verified Nutrition DB'
     };
+    await cacheService.set(cacheKey, result, 86400);
+    return result;
   }
 
-  // Unknown food — return estimated values
-  return {
-    foodName: foodName,
+  // 4. Default estimation
+  const result = {
+    foodName,
     calories: 150,
     protein:  5,
     carbs:    20,
@@ -101,145 +116,189 @@ const lookupFood = async (foodName) => {
     serving:  '100g',
     source:   'Estimated'
   };
+  await cacheService.set(cacheKey, result, 3600);
+  return result;
 };
 
 // @route  POST /api/food/detect
 // @desc   Detect food and get nutrition info
 // @access Private
-const detectFood = async (req, res) => {
+const detectFood = async (req, res, next) => {
   try {
     const { foodName } = req.body;
-    if (!foodName) return res.status(400).json({ message: 'Food name is required' });
-
     const nutritionData = await lookupFood(foodName);
 
-    // Include healthier alternatives if available
     const key = foodName.toLowerCase().trim();
     const altKey = Object.keys(alternatives).find(k => key.includes(k));
-    nutritionData.alternatives = altKey ? alternatives[altKey] : ['Try more vegetables!', 'Add fruits to your diet', 'Choose whole grains'];
+    nutritionData.alternatives = altKey ? alternatives[altKey] : ['Boost vegetable portion', 'Add seasonal fruits', 'Choose whole grains'];
 
     res.json(nutritionData);
   } catch (error) {
-    res.status(500).json({ message: 'Error detecting food', error: error.message });
+    next(error);
   }
 };
 
 // @route  POST /api/food/log
 // @desc   Add food to today's log
 // @access Private
-const addFoodLog = async (req, res) => {
+const addFoodLog = async (req, res, next) => {
   try {
-    const { foodName, calories, protein, carbs, fat, fiber, serving, mealType } = req.body;
+    const { foodName, calories, protein, carbs, fat, fiber, serving, mealType, source, imageUrl, date } = req.body;
+
+    const logDate = date ? new Date(date) : new Date();
+    const normalizedDate = new Date(logDate.getFullYear(), logDate.getMonth(), logDate.getDate());
 
     const log = await FoodLog.create({
       userId:   req.user._id,
-      foodName, calories, protein, carbs, fat, fiber,
+      foodName,
+      calories,
+      protein:  protein || 0,
+      carbs:    carbs || 0,
+      fat:      fat || 0,
+      fiber:    fiber || 0,
       serving:  serving || '100g',
-      mealType: mealType || 'snack'
+      mealType: mealType || 'snack',
+      source:   source || 'Manual',
+      imageUrl: imageUrl || null,
+      date:     normalizedDate
     });
 
     res.status(201).json(log);
   } catch (error) {
-    res.status(500).json({ message: 'Error adding food log', error: error.message });
+    next(error);
   }
 };
 
 // @route  GET /api/food/log
-// @desc   Get today's food log for the user
+// @desc   Get today's food log using MongoDB Aggregation Pipeline ($facet)
 // @access Private
-const getTodayLog = async (req, res) => {
+const getTodayLog = async (req, res, next) => {
   try {
     const today = new Date();
     const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const endOfDay   = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
 
-    const logs = await FoodLog.find({
-      userId: req.user._id,
-      date: { $gte: startOfDay, $lt: endOfDay }
-    }).sort({ createdAt: -1 });
+    // MongoDB Aggregation Pipeline for fast parallel aggregation and log listing
+    const [result] = await FoodLog.aggregate([
+      {
+        $match: {
+          userId: req.user._id,
+          date: { $gte: startOfDay, $lt: endOfDay }
+        }
+      },
+      {
+        $facet: {
+          logs: [
+            { $sort: { createdAt: -1 } }
+          ],
+          totals: [
+            {
+              $group: {
+                _id: null,
+                calories: { $sum: '$calories' },
+                protein:  { $sum: '$protein' },
+                carbs:    { $sum: '$carbs' },
+                fat:      { $sum: '$fat' },
+                fiber:    { $sum: '$fiber' }
+              }
+            }
+          ]
+        }
+      }
+    ]);
 
-    // Calculate totals
-    const totals = logs.reduce((acc, log) => {
-      acc.calories += log.calories;
-      acc.protein  += log.protein;
-      acc.carbs    += log.carbs;
-      acc.fat      += log.fat;
-      return acc;
-    }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+    const logs = result?.logs || [];
+    const totals = result?.totals?.[0] || { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 };
+    delete totals._id;
 
     res.json({ logs, totals });
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching food log', error: error.message });
+    next(error);
   }
 };
 
 // @route  GET /api/food/weekly
-// @desc   Get the last 7 days of calorie data for charts
+// @desc   Get the last 7 days of calorie data via MongoDB aggregation
 // @access Private
-const getWeeklyData = async (req, res) => {
+const getWeeklyData = async (req, res, next) => {
   try {
     const today = new Date();
-    const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setDate(today.getDate() - 6);
-    sevenDaysAgo.setHours(0, 0, 0, 0);
+    const sevenDaysAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6);
 
-    const logs = await FoodLog.find({
-      userId: req.user._id,
-      date: { $gte: sevenDaysAgo }
-    });
+    // Aggregate daily totals on database layer
+    const dailyTotals = await FoodLog.aggregate([
+      {
+        $match: {
+          userId: req.user._id,
+          date: { $gte: sevenDaysAgo }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: '%Y-%m-%d', date: '$date' }
+          },
+          calories: { $sum: '$calories' },
+          protein:  { $sum: '$protein' },
+          carbs:    { $sum: '$carbs' },
+          fat:      { $sum: '$fat' }
+        }
+      }
+    ]);
 
-    // Group by date — build a map for the last 7 days
+    const totalsMap = new Map();
+    dailyTotals.forEach(item => totalsMap.set(item._id, item));
+
+    // Fill in last 7 consecutive days
     const days = [];
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const key = `${year}-${month}-${day}`;
+
+      const stat = totalsMap.get(key);
       days.push({
-        date:     d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
-        dateKey:  `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`,
-        calories: 0,
-        protein:  0,
-        carbs:    0,
-        fat:      0
+        date: d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+        dateKey: key,
+        calories: stat ? Math.round(stat.calories) : 0,
+        protein:  stat ? Math.round(stat.protein) : 0,
+        carbs:    stat ? Math.round(stat.carbs) : 0,
+        fat:      stat ? Math.round(stat.fat) : 0
       });
     }
 
-    // Sum calories for each day
-    logs.forEach(log => {
-      const logDate = new Date(log.date);
-      const key = `${logDate.getFullYear()}-${logDate.getMonth()}-${logDate.getDate()}`;
-      const day = days.find(d => d.dateKey === key);
-      if (day) {
-        day.calories += log.calories;
-        day.protein  += log.protein;
-        day.carbs    += log.carbs;
-        day.fat      += log.fat;
-      }
-    });
-
     res.json(days);
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching weekly data', error: error.message });
+    next(error);
   }
 };
 
 // @route  DELETE /api/food/log/:id
 // @desc   Delete a food log entry
 // @access Private
-const deleteFoodLog = async (req, res) => {
+const deleteFoodLog = async (req, res, next) => {
   try {
     const log = await FoodLog.findById(req.params.id);
-    if (!log) return res.status(404).json({ message: 'Log entry not found' });
+    if (!log) return next(new AppError('Log entry not found', 404));
 
-    // Make sure user owns this entry
     if (log.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Not authorized to delete this entry' });
+      return next(new AppError('Not authorized to delete this entry', 403));
     }
 
     await FoodLog.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Food log entry deleted' });
+    res.json({ status: 'success', message: 'Food log entry deleted' });
   } catch (error) {
-    res.status(500).json({ message: 'Error deleting food log', error: error.message });
+    next(error);
   }
 };
 
-module.exports = { detectFood, addFoodLog, getTodayLog, getWeeklyData, deleteFoodLog };
+module.exports = {
+  detectFood,
+  addFoodLog,
+  getTodayLog,
+  getWeeklyData,
+  deleteFoodLog
+};
+

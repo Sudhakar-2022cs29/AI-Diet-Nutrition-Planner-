@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { foodAPI, dietAPI, authAPI } from '../services/api';
-import { FiSearch, FiList, FiTarget, FiBarChart2, FiEdit2, FiCheck, FiX } from 'react-icons/fi';
+import { FiSearch, FiList, FiTarget, FiBarChart2, FiEdit2, FiCheck, FiX, FiCpu } from 'react-icons/fi';
 
 const GOAL_LABELS = {
   weight_loss:  { label: '🔥 Weight Loss',  badge: 'badge-red' },
@@ -207,10 +207,11 @@ export default function Dashboard() {
       {/* Quick action buttons */}
       <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap' }}>
         {[
-          { to:'/detect',       icon:<FiSearch />,   label:'Detect Food',  primary:true },
-          { to:'/log',          icon:<FiList />,     label:'View Log',     primary:false },
-          { to:'/diet-planner', icon:<FiTarget />,   label:'Diet Planner', primary:false },
-          { to:'/progress',     icon:<FiBarChart2 />,label:'Progress',     primary:false },
+          { to:'/detect',       icon:<FiSearch />,   label:'Detect Food',         primary:true },
+          { to:'/ai-coach',     icon:<FiCpu />,      label:'AI Nutrition Coach',  primary:true },
+          { to:'/log',          icon:<FiList />,     label:'View Log',            primary:false },
+          { to:'/diet-planner', icon:<FiTarget />,   label:'Diet Planner',        primary:false },
+          { to:'/progress',     icon:<FiBarChart2 />,label:'Progress Analytics',   primary:false },
         ].map(a => (
           <Link key={a.to} to={a.to} className={`btn ${a.primary ? 'btn-primary' : 'btn-secondary'}`}>
             {a.icon} {a.label}

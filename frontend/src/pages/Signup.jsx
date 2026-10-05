@@ -1,8 +1,8 @@
-// Signup page
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { FiUser, FiMail, FiLock } from 'react-icons/fi';
+import { toast } from 'sonner';
 
 export default function Signup() {
   const [form, setForm] = useState({
@@ -19,10 +19,20 @@ export default function Signup() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    if (form.password.length < 6) return setError('Password must be at least 6 characters');
+    if (form.password.length < 6) {
+      const msg = 'Password must be at least 6 characters';
+      setError(msg);
+      toast.error(msg);
+      return;
+    }
     const result = await signup(form);
-    if (result.success) navigate('/dashboard');
-    else setError(result.message);
+    if (result.success) {
+      toast.success('Welcome to NutriAI! Account created.');
+      navigate('/dashboard');
+    } else {
+      setError(result.message);
+      toast.error(result.message);
+    }
   };
 
   return (

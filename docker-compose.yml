@@ -1,0 +1,68 @@
+services:
+  # MongoDB database service
+  mongodb:
+    image: mongo:7.0
+    container_name: nutriai-mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - nutriai-network
+
+  # Redis caching & rate-limiting store
+  redis:
+    image: redis:7-alpine
+    container_name: nutriai-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - nutriai-network
+
+  # Express REST API backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: nutriai-backend
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - MONGO_URI=mongodb://mongodb:27017/diet-planner
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=production_super_secret_jwt_key_diet_planner_2026_xyz
+      - REFRESH_TOKEN_SECRET=production_super_secret_refresh_key_diet_planner_2026_abc
+      - NODE_ENV=production
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - CALORIENINJAS_API_KEY=${CALORIENINJAS_API_KEY}
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - nutriai-network
+
+  # React Single Page Application frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nutriai-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - nutriai-network
+
+volumes:
+  mongo-data:
+    driver: local
+
+networks:
+  nutriai-network:
+    driver: bridge
