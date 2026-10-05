@@ -351,8 +351,11 @@ export default function FoodDetection() {
                 {result.nutriScore && result.nutriScore !== 'N/A' && (
                   <span className="badge badge-green">Nutri-Score: {result.nutriScore}</span>
                 )}
-                {result.confidence && (
+                {result.confidence && result.provider !== 'built_in_estimate' && (
                   <span className="badge badge-orange">{Math.round(result.confidence * 100)}% AI Match</span>
+                )}
+                {result.provider === 'built_in_estimate' && (
+                  <span className="badge badge-orange">Sample estimate — not a real scan</span>
                 )}
               </div>
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>

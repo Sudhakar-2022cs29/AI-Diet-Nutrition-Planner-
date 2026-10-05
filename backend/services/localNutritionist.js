@@ -11,7 +11,11 @@ const FOOD_DATABASE = {
     { name: 'Whey protein shake (1 scoop + water)', kcal: 120, protein: 24, carbs: 3, fat: 1 },
     { name: 'Large eggs (2)', kcal: 144, protein: 12, carbs: 1, fat: 10 },
     { name: 'Baked salmon (150g)', kcal: 312, protein: 33, carbs: 0, fat: 19 },
-    { name: 'Cottage cheese & egg whites bowl', kcal: 190, protein: 27, carbs: 4, fat: 6 }
+    { name: 'Cottage cheese & egg whites bowl', kcal: 190, protein: 27, carbs: 4, fat: 6 },
+    { name: 'Edamame, cooked (150g)', kcal: 190, protein: 19, carbs: 15, fat: 8 },
+    { name: 'Tofu and edamame stir-fry (200g)', kcal: 230, protein: 20, carbs: 12, fat: 12 },
+    { name: 'Lentil and chickpea salad (200g)', kcal: 280, protein: 16, carbs: 38, fat: 7 },
+    { name: 'Pea protein shake with almond milk', kcal: 150, protein: 25, carbs: 4, fat: 4 }
   ],
   carbs: [
     { name: 'Rolled oats (50g dry)', kcal: 190, protein: 6, carbs: 33, fat: 3 },
@@ -118,19 +122,72 @@ const remainingStatus = (context) => {
 
 const pickFoods = (category, count = 3) => FOOD_DATABASE[category].slice(0, count);
 
+// Terms that disqualify a food for each restriction. Substring matching is safe here
+// because the food names are plain English (unlike free-text user questions).
+const RESTRICTION_PATTERNS = {
+  // Matches animal products only — "milk" is deliberately absent so plant milks
+  // (almond, oat, soy) stay allowed
+  vegan: /chicken|beef|pork|turkey|duck|fish|salmon|cod|tuna|sardine|shrimp|prawn|yogurt|cheese|egg|honey|feta|parmesan|ricotta|paneer|mascarpone|butter|cream|halloumi|skyr|cottage cheese|hummus|tahini|soba|mayonnaise|oyster|mussel|whey|casein|cow's milk/i,
+  vegetarian: /chicken|beef|pork|turkey|duck|fish|salmon|cod|tuna|sardine|shrimp|prawn|lentil soup|chickpea/i,
+  gluten: /bread|sourdough|oats|pasta|orzo|soba|noodle|roti|tortilla|rye|barley|farro|couscous|granola|overnight oats/i,
+  dairy: /yogurt|cheese|milk|feta|parmesan|ricotta|paneer|mascarpone|butter|cream|halloumi|skyr|cottage cheese|whey|casein|almond milk|soy milk/i,
+  nut: /almond|walnut|pecan|cashew|macadamia|hazelnut|peanut|nuts|hummus|tahini|chia|flaxseed|seeds/i,
+  shellfish: /shrimp|prawn|crab|lobster|mussel|clam|oyster|scallop/i,
+  halal: /pork|bacon|ham|prosciutto/i,
+  kosher: /pork|bacon|ham|shrimp|prawn|shellfish/i
+};
+
+// Profile values arrive in several spellings ("Gluten-Free", "gluten free", "nut
+// allergy"), so resolve each one to a canonical key before looking up its pattern.
+const canonicalRestriction = (value) => {
+  const text = normalise(value);
+  if (text.includes('gluten') || text.includes('celiac') || text.includes('coeliac')) return 'gluten';
+  if (text.includes('lactose') || text.includes('dairy')) return 'dairy';
+  if (text.includes('nut')) return 'nut';
+  if (text.includes('shellfish') || text.includes('seafood')) return 'shellfish';
+  if (text.includes('vegan')) return 'vegan';
+  if (text.includes('vegetarian')) return 'vegetarian';
+  if (text.includes('halal')) return 'halal';
+  if (text.includes('kosher')) return 'kosher';
+  return text;
+};
+
+const isFoodAllowed = (food, restrictions) =>
+  (restrictions || []).every((restriction) => {
+    const pattern = RESTRICTION_PATTERNS[canonicalRestriction(restriction)];
+    return pattern ? !pattern.test(food.name) : true;
+  });
+
+/** Restriction-aware food picker. Falls back to the veg pool if everything is filtered out. */
+const pickAllowedFoods = (category, restrictions, count = 3) => {
+  if (!restrictions || !restrictions.length) return pickFoods(category, count);
+
+  const allowed = FOOD_DATABASE[category].filter((f) => isFoodAllowed(f, restrictions));
+  if (allowed.length) return allowed.slice(0, count);
+
+  const vegFallback = FOOD_DATABASE.veg.filter((f) => isFoodAllowed(f, restrictions));
+  return vegFallback.slice(0, count) || pickFoods(category, count);
+};
+
+const filterAllowed = (foods, restrictions) =>
+  !restrictions || !restrictions.length ? foods : foods.filter((f) => isFoodAllowed(f, restrictions));
+
 const buildProteinAnswer = (context) => {
   const { lines } = remainingStatus(context);
   const budget = Math.max(150, Math.round((context.remaining ?? context.targetCalories) / 2));
 
-  const options = FOOD_DATABASE.protein
-    .filter((f) => f.kcal <= budget)
-    .slice(0, 4);
+  const restrictions = context.dietaryRestrictions || [];
+  const allowedProtein = filterAllowed(FOOD_DATABASE.protein, restrictions);
 
-  const picks = options.length ? options : FOOD_DATABASE.protein.slice(0, 3);
+  const options = allowedProtein.filter((f) => f.kcal <= budget).slice(0, 4);
+
+  // If the budget rules everything out (or restrictions do), still suggest something legal
+  const picks = options.length ? options : pickAllowedFoods('protein', restrictions, 3);
 
   return [
     '## Protein options for you',
     ...lines,
+    ...(restrictions.length ? [`*Filtered for: ${restrictions.join(', ')}.*`] : []),
     '',
     `High-protein foods that fit your budget of roughly **${fmt(budget)} kcal**:`,
     ...picks.map((f) => `- **${f.name}** — ${macroLine(f)}`),
@@ -194,22 +251,30 @@ const buildWorkoutAnswer = (context) => {
 };
 
 const buildLateNightAnswer = (context) => {
-  const options = [
+  const restrictions = context.dietaryRestrictions || [];
+  const allOptions = [
     { name: 'Cottage cheese with cinnamon (150g)', kcal: 155, protein: 21, note: 'slow-digesting casein, minimal glucose response' },
     { name: 'Boiled eggs (2) with cucumber', kcal: 180, protein: 13, note: 'filling without a carb load' },
     { name: 'Greek yogurt with a few walnuts (170g)', kcal: 250, protein: 15, note: 'if you want something that feels like a treat' },
-    { name: 'Chamomile tea with a spoon of casein', kcal: 100, protein: 12, note: 'smallest option that still gives you protein' }
+    { name: 'Chamomile tea with a spoon of casein', kcal: 100, protein: 12, note: 'smallest option that still gives you protein' },
+    { name: 'Edamame with sea salt (100g)', kcal: 120, protein: 12, note: 'plant option, low calorie, high satiety' },
+    { name: 'Smashed avocado on cucumber slices with lime', kcal: 160, protein: 2, note: 'if you want something savoury with almost no carbs' },
+    { name: 'Chia seed pudding made with soy milk (150g)', kcal: 170, protein: 7, note: 'vegan option that will not spike glucose' }
   ];
 
-  const lateNight = FOOD_DATABASE.balanced.filter((f) => f.kcal > 350);
+  const options = filterAllowed(allOptions, restrictions);
+
+  const lateNight = FOOD_DATABASE.balanced.filter((f) => f.kcal > 350 && isFoodAllowed(f, restrictions));
 
   return [
     '## Late night, without wrecking tomorrow',
     `The goal is protein plus volume, not carbs — a big carb load before sleep spikes insulin overnight and hurts appetite the next morning.`,
+    ...(restrictions.length ? [`*Filtered for: ${restrictions.join(', ')}.*`] : []),
     '',
-    ...options.map((f) => `- **${f.name}** — ${f.kcal} kcal, ${f.protein}g protein (${f.note})`),
-    '',
-    `**Worth skipping:** ${lateNight[0].name} and similar (${lateNight[0].kcal} kcal) — too much energy to spend while you are asleep.`,
+    ...options.slice(0, 4).map((f) => `- **${f.name}** — ${f.kcal} kcal, ${f.protein}g protein (${f.note})`),
+    ...(lateNight.length
+      ? ['', `**Worth skipping:** ${lateNight[0].name} and similar (${lateNight[0].kcal} kcal) — too much energy to spend while you are asleep.`]
+      : []),
     'Pair it with herbal tea rather than coffee, since caffeine after mid-afternoon cuts deep sleep.'
   ].join('\n');
 };
@@ -263,29 +328,36 @@ const buildMacroBalanceAnswer = (context) => {
       : `**Closest foods to close the gap** (fits ${fmt(remaining)} kcal remaining):`,
     ...(over.length
       ? []
-      : [
-          ...pickFoods(remaining < 300 ? 'veg' : 'balanced', 3).map((f) => `- **${f.name}** — ${macroLine(f)}`)
-        ])
+      : pickAllowedFoods(remaining < 300 ? 'veg' : 'balanced', context.dietaryRestrictions, 3)
+          .map((f) => `- **${f.name}** — ${macroLine(f)}`))
   ].join('\n');
 };
 
 const buildMealIdeaAnswer = (context) => {
   const remaining = Math.max(0, (context.targetCalories || 2000) - (context.consumedCalories || 0));
-  const slot = context.mealContext || guessSlotFromHour();
-  const targets = parseTargets(normalise(context.lastMessage));
+  const text = normalise(context.lastMessage);
+  // An explicit slot in the question ("give me a lunch") beats the time-of-day guess
+  const slot = context.mealContext || detectSlot(text) || guessSlotFromHour();
+  const targets = parseTargets(text);
 
   // An explicit budget in the question wins over what's left today; otherwise a single
   // meal gets roughly a third of the daily target (or all of what is left, if less).
   const budget = targets.calories || (remaining > 0 ? Math.min(remaining, Math.round((context.targetCalories || 2000) / 3)) : Math.round((context.targetCalories || 2000) / 3));
 
   const pools = {
-    breakfast: [...FOOD_DATABASE.protein.slice(4, 6), ...FOOD_DATABASE.carbs.slice(0, 2), ...FOOD_DATABASE.fats.slice(1, 2)],
-    lunch: [...FOOD_DATABASE.balanced, ...FOOD_DATABASE.protein.slice(1, 3)],
-    dinner: [...FOOD_DATABASE.balanced, ...FOOD_DATABASE.protein.slice(5, 6)],
-    snack: [...FOOD_DATABASE.protein.slice(3, 6), ...FOOD_DATABASE.fats.slice(0, 2)]
+    // Proteins first so a protein floor or a restricted diet still lands on a real
+    // protein source; complete dishes and sides follow as variety
+    breakfast: [...FOOD_DATABASE.protein.slice(4), ...FOOD_DATABASE.carbs.slice(0, 2), ...FOOD_DATABASE.fats.slice(1, 2)],
+    lunch: [...FOOD_DATABASE.protein.slice(1), ...FOOD_DATABASE.balanced],
+    dinner: [...FOOD_DATABASE.protein.slice(5), ...FOOD_DATABASE.balanced],
+    snack: [...FOOD_DATABASE.protein.slice(3), ...FOOD_DATABASE.fats.slice(0, 2)]
   };
 
-  let candidates = pools[slot].filter((f) => f.kcal <= Math.max(200, budget));
+  const restrictions = context.dietaryRestrictions || [];
+
+  // Restrictions are a hard filter, applied before the calorie and protein constraints
+  let candidates = filterAllowed(pools[slot], restrictions)
+    .filter((f) => f.kcal <= Math.max(200, budget));
 
   // If the user asked for a protein floor, lead with the options that actually hit it
   if (targets.protein) {
@@ -293,7 +365,7 @@ const buildMealIdeaAnswer = (context) => {
     if (hits.length) candidates = [...hits, ...candidates.filter((f) => f.protein < targets.protein)];
   }
 
-  const picks = candidates.length ? candidates.slice(0, 3) : pickFoods('balanced', 3);
+  const picks = candidates.length ? candidates.slice(0, 3) : pickAllowedFoods('balanced', restrictions, 3);
   const best = picks[0];
 
   const constraints = [
@@ -305,22 +377,38 @@ const buildMealIdeaAnswer = (context) => {
     ? `Here is a ${slot} option ${constraints.join(' and ')}.`
     : `You have **${fmt(remaining)} kcal** left today, so here is a ${slot} option sized to fit.`;
 
+  const shortfall = targets.protein && best.protein < targets.protein ? targets.protein - best.protein : 0;
+
+  // Look across every allowed protein, not just the first few, so the shortfall can
+  // actually be closed when a viable booster exists
+  const boosterPool = restrictions.length
+    ? filterAllowed(FOOD_DATABASE.protein, restrictions)
+    : FOOD_DATABASE.protein;
+  const booster = boosterPool.find((f) => f.name !== best.name && f.protein >= shortfall);
+
   const bestLine = targets.protein
-    ? best.protein >= targets.protein
+    ? shortfall === 0
       ? `**Best match:** ${best.name} — ${best.kcal} kcal with ${best.protein}g protein, which clears your ${targets.protein}g target.`
-      : `**Best available:** ${best.name} — ${best.protein}g protein. That is the closest option I carry; to hit ${targets.protein}g exactly you would need to add a protein source such as whey, chicken or cottage cheese alongside it.`
+      : booster
+        ? `**Build it up:** ${best.name} (${best.protein}g protein) plus ${booster.name} (${booster.protein}g) gets you to ${best.protein + booster.protein}g, clearing your ${targets.protein}g target inside the budget.`
+        : `**Best available:** ${best.name} — ${best.protein}g protein, which is ${shortfall}g short of your ${targets.protein}g target.`
     : `**What I would pick right now:** ${best.name} — ${best.protein}g protein with the least fat of the options.`;
+
+  const side = pickAllowedFoods('veg', restrictions, 1)[0];
 
   return [
     `## ${slot.charAt(0).toUpperCase() + slot.slice(1)} idea`,
     headline,
+    ...(restrictions.length ? [`*Filtered for: ${restrictions.join(', ')}.*`] : []),
     '',
     ...picks.map((f) => `- **${f.name}** — ${macroLine(f)}`),
     '',
     bestLine,
     '',
-    `Pair it with ${pickFoods('veg', 1)[0].name.toLowerCase()} on the side for fibre and volume.`
-  ].join('\n');
+    side ? `Pair it with ${side.name.toLowerCase()} on the side for fibre and volume.` : ''
+  ]
+    .filter(Boolean)
+    .join('\n');
 };
 
 /** Pull explicit numeric targets out of the question, e.g. "40g protein dinner under 550 kcal" */
@@ -332,6 +420,10 @@ const parseTargets = (text) => {
     calories: kcalMatch ? Number(kcalMatch[1]) : null
   };
 };
+
+const SLOTS = ['breakfast', 'lunch', 'dinner', 'snack'];
+
+const detectSlot = (text) => SLOTS.find((slot) => hasWord(text, slot) || (slot === 'snack' && hasWord(text, 'snacks')));
 
 const guessSlotFromHour = () => {
   const hour = new Date().getHours();
@@ -351,7 +443,7 @@ const buildGeneralAnswer = (context) => {
     ...lines.map((l) => `- ${l}`),
     '',
     proteinGap > 20
-      ? `**Where to spend your ${fmt(remaining)} kcal:** prioritise protein. Options — ${pickFoods('protein', 2).map((f) => `${f.name} (${f.protein}g)`).join(' or ')}.`
+      ? `**Where to spend your ${fmt(remaining)} kcal:** prioritise protein. Options — ${pickAllowedFoods('protein', context.dietaryRestrictions, 2).map((f) => `${f.name} (${f.protein}g)`).join(' or ')}.`
       : `**Where to spend your ${fmt(remaining)} kcal:** you are on track for protein, so use the rest on vegetables and a whole grain of your choice.`,
     '',
     `**One thing to change today:** your activity level is set to *${context.activityLabel || 'moderate'}*. That single field shifts your daily target by roughly ${context.activityLevel === 'sedentary' ? '250' : context.activityLevel === 'very_active' ? '450' : '150'} kcal, so it is worth keeping accurate.`
@@ -360,47 +452,46 @@ const buildGeneralAnswer = (context) => {
   return body.join('\n');
 };
 
+// Replacement guidance per restriction. The exclusion patterns live in
+// RESTRICTION_PATTERNS above so there is a single source of truth.
+const RESTRICTION_SWAPS = {
+  vegan: 'plant protein like tofu, tempeh, lentils or seitan',
+  vegetarian: 'eggs, dairy, tofu or legumes',
+  gluten: 'rice, quinoa, potato or buckwheat',
+  dairy: 'plant alternatives, or coconut and nut based options',
+  halal: 'chicken, beef, lamb, fish or legumes',
+  kosher: 'beef, chicken, dairy or plant proteins',
+  nut: 'pumpkin or sunflower seeds as a partial replacement',
+  shellfish: 'fish or lean meat'
+};
+
 const buildRestrictionAnswer = (context) => {
   const restrictions = context.dietaryRestrictions || [];
   if (!restrictions.length) return null;
 
-  const filters = {
-    vegan: { exclude: /chicken|beef|pork|turkey|fish|salmon|cod|tuna|yogurt|cheese|egg|milk|cheese|halloumi|parmesan|honey/i, swap: 'plant protein like tofu, tempeh, lentils or seitan' },
-    vegetarian: { exclude: /chicken|beef|pork|turkey|fish|salmon|cod|tuna|shrimp|prawn/i, swap: 'eggs, dairy, tofu or legumes' },
-    'gluten-free': { exclude: /bread|sourdough|oats|pasta|orzo|roti|soba|noodle|rice|pasta|tortilla|rye|barley|farro/i, swap: 'rice, quinoa, potato or buckwheat' },
-    dairy: { exclude: /yogurt|cheese|milk|feta|parmesan|ricotta|paneer|mascarpone|butter|cream|halloumi|skyr/i, swap: 'plant alternatives or coconut and nut based options' },
-    halal: { exclude: /pork|bacon|ham|prosciutto/i, swap: 'chicken, beef, lamb, fish or legumes' },
-    kosher: { exclude: /pork|bacon|ham|shrimp|prawn|shellfish/i, swap: 'beef, chicken, dairy or plant proteins' },
-    nut: { exclude: /almond|walnut|pecan|peanut|cashew|macadamia|hazelnut|nut|peanut butter|tahini|chia|flaxseed|seeds/i, swap: 'pumpkin or sunflower seeds as a partial replacement' },
-    shellfish: { exclude: /shrimp|prawn|crab|lobster|mussel|clam|oyster|scallop/i, swap: 'fish or lean meat' }
-  };
-
-  const applied = Object.entries(filters).filter(([key]) =>
-    restrictions.some((r) => normalise(r).includes(key))
-  );
+  const applied = [...new Set(restrictions.map(canonicalRestriction))]
+    .filter((key) => RESTRICTION_PATTERNS[key]);
 
   const sections = ['## Dietary restrictions'];
 
   if (applied.length) {
     sections.push(
-      `Your profile lists: **${restrictions.join(', ')}**. Here is how I filter my suggestions for that:`,
+      `Your profile lists: **${restrictions.join(', ')}**. Every suggestion below already excludes conflicting foods:`,
       ''
     );
-    applied.forEach(([key, rule]) => {
-      sections.push(`- **${key}** — I exclude anything matching /${rule.exclude.source}/i and suggest ${rule.swap} instead.`);
+    applied.forEach((key) => {
+      sections.push(`- **${key}** — excluded /${RESTRICTION_PATTERNS[key].source}/i, and I suggest ${RESTRICTION_SWAPS[key] || 'the nearest compliant alternative'} instead.`);
     });
   }
 
-  const safe = pickFoods('veg', 2);
+  const safe = pickAllowedFoods('veg', restrictions, 2);
   sections.push(
     '',
-    '**Always safe options** regardless of restriction:',
-    ...safe.map((f) => `- ${f.name} — ${f.kcal} kcal, ${f.protein}g protein`)
+    '**Options that work with your restrictions:**',
+    ...safe.map((f) => `- **${f.name}** — ${f.kcal} kcal, ${f.protein}g protein`)
   );
 
-  if (context.dietaryRestrictionsVerified === false) {
-    sections.push('', '_Note: I am working from your saved profile. Update it in settings if anything has changed._');
-  }
+  sections.push('', '_Working from the restrictions saved in your profile. Update them in settings if anything has changed._');
 
   return sections.join('\n');
 };
@@ -461,6 +552,16 @@ const INTENT_ORDER = [
  */
 const answerLocally = (context) => {
   const text = normalise(context.lastMessage || '');
+  const restrictions = context.dietaryRestrictions || [];
+
+  // A question like "what can I eat for lunch if I'm vegan?" is really a meal request —
+  // the meal builder already applies the user's restrictions, so prefer it over the
+  // generic restriction explainer.
+  const asksForFood = detectSlot(text) || parseTargets(text).calories || parseTargets(text).protein;
+  if (restrictions.length && asksForFood) {
+    return { reply: buildMealIdeaAnswer(context), source: 'Aura Local Nutrition Engine', intent: 'meal' };
+  }
+
   const intent = INTENT_ORDER.find((entry) => entry.test(text));
 
   if (intent) {

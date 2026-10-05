@@ -27,7 +27,7 @@ const baseContext = {
   consumedProtein: 80,
   consumedCarbs: 120,
   consumedFat: 40,
-  mealContext: 'dinner'
+  loggedToday: [{ foodName: 'Oats', calories: 300, mealType: 'breakfast' }]
 };
 
 describe('buildNutritionProfile', () => {
@@ -281,11 +281,98 @@ describe('local nutrition engine', () => {
     const result = answerLocally({
       ...baseContext,
       dietaryRestrictions: ['dairy'],
-      lastMessage: 'what can I eat with a dairy allergy?'
+      lastMessage: 'i have a dairy allergy, what should I avoid?'
     });
 
     expect(result.reply).toContain('dairy');
     expect(result.intent).toBe('restriction');
+  });
+
+  it('never suggests a food that conflicts with a saved restriction', () => {
+    const restrictions = [
+      ['vegan', /chicken|beef|pork|fish|salmon|cod|tuna|yogurt|cheese|egg|honey|whey|cottage/i],
+      ['dairy', /yogurt|cheese|milk|feta|parmesan|cottage|whey/i],
+      ['gluten-free', /bread|sourdough|oats|pasta|noodle|soba|granola/i],
+      ['vegetarian', /chicken|beef|pork|turkey|fish|salmon|cod|tuna|shrimp|prawn/i]
+    ];
+
+    const questions = [
+      'give me a 40g protein dinner under 600 kcal',
+      'what can I eat for breakfast?',
+      'protein ideas please',
+      'late night snack',
+      'something for lunch',
+      'review my macros'
+    ];
+
+    restrictions.forEach(([restriction, pattern]) => {
+      questions.forEach((question) => {
+        const { reply } = answerLocally({
+          ...baseContext,
+          dietaryRestrictions: [restriction],
+          lastMessage: question
+        });
+
+        // Only inspect the recommended food lines, not the explanatory prose
+        const recommended = reply
+          .split('\n')
+          .filter((line) => line.startsWith('- **'))
+          .join('\n');
+
+        expect(recommended, `${restriction} / ${question}`).not.toMatch(pattern);
+      });
+    });
+  });
+
+  it('normalises restriction spellings before filtering', () => {
+    const spellings = ['Gluten-Free', 'gluten free', 'Coeliac'];
+    spellings.forEach((restriction) => {
+      const { reply } = answerLocally({
+        ...baseContext,
+        dietaryRestrictions: [restriction],
+        lastMessage: 'give me a breakfast under 500 kcal'
+      });
+
+      const recommended = reply.split('\n').filter((line) => line.startsWith('- **')).join('\n');
+      expect(recommended).not.toMatch(/bread|sourdough|oats|granola|pancakes/i);
+    });
+  });
+
+  it('closes a protein shortfall with a compliant booster when one exists', () => {
+    const { reply } = answerLocally({
+      ...baseContext,
+      dietaryRestrictions: ['vegan'],
+      lastMessage: 'give me a 40g protein dinner under 550 kcal'
+    });
+
+    expect(reply).toMatch(/Build it up|clears your 40g/);
+    expect(reply).not.toMatch(/whey|chicken|cottage|yogurt/i);
+  });
+
+  it('routes a restriction-plus-meal question to the meal builder', () => {
+    const result = answerLocally({
+      ...baseContext,
+      dietaryRestrictions: ['Gluten-Free'],
+      lastMessage: 'what can I eat for lunch?'
+    });
+
+    expect(result.intent).toBe('meal');
+    expect(result.reply).toContain('Lunch');
+    expect(result.reply).not.toMatch(/^-+ .*(bread|sourdough)/m);
+  });
+
+  it('detects the meal slot named in the question', () => {
+    const slots = [
+      ['give me a breakfast with 30g protein', 'Breakfast'],
+      ['something for lunch', 'Lunch'],
+      ['I want a dinner option', 'Dinner'],
+      ['a snack idea', 'Snack']
+    ];
+
+    slots.forEach(([question, expectedHeading]) => {
+      const { reply } = answerLocally({ ...baseContext, lastMessage: question });
+      expect(reply).toContain(`## ${expectedHeading} idea`);
+    });
   });
 });
 
